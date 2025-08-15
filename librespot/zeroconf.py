@@ -23,6 +23,8 @@ import zeroconf
 
 class ZeroconfServer(Closeable):
     logger = logging.getLogger("Librespot:ZeroconfServer")
+    logger.propagate = False
+
     service = "_spotify-connect._tcp.local."
     __connecting_username: typing.Union[str, None] = None
     __connection_lock = threading.Condition()
@@ -30,18 +32,19 @@ class ZeroconfServer(Closeable):
         "status": 101,
         "statusString": "OK",
         "spotifyError": 0,
-        "version": "2.7.1",
+        "version": "2.9.0",
         "libraryVersion": Version.version_name,
-        "accountReq": "PREMIUM",
+        "accountReq": "FREE",
         "brandDisplayName": "kokarare1212",
         "modelDisplayName": "librespot-python",
         "voiceSupport": "NO",
-        "availability": "",
+        "availability": "1",
         "productID": 0,
         "tokenType": "default",
         "groupStatus": "NONE",
-        "resolverVersion": "0",
+        "resolverVersion": "1",
         "scope": "streaming,client-authorization-universal",
+        "clientID": "65b708073fc0480ea92a077233ca87bd"
     }
     __default_successful_add_user = {
         "status": 101,
@@ -64,26 +67,105 @@ class ZeroconfServer(Closeable):
             listen_port = random.randint(self.__min_port + 1, self.__max_port)
         self.__runner = ZeroconfServer.HttpRunner(self, listen_port)
         threading.Thread(target=self.__runner.run,
-                         name="zeroconf-http-server").start()
+                         name="zeroconf-http-server",
+                         daemon=True).start()
+
         self.__zeroconf = zeroconf.Zeroconf()
+
+        advertised_ip_str = self._get_local_ip()
+
+        server_hostname = socket.gethostname()
+        if not server_hostname or server_hostname == "localhost":
+            self.logger.warning(
+                f"Machine hostname is '{server_hostname}', which is not ideal for mDNS. "
+                f"Consider setting a unique hostname for this machine. "
+                f"Using device name '{inner.device_name}' as part of the service instance name, "
+                f"but relying on zeroconf library to handle server resolution for IP {advertised_ip_str}."
+            )
+
+        service_addresses = None
+        if advertised_ip_str != "0.0.0.0":
+            try:
+                service_addresses = [socket.inet_aton(advertised_ip_str)]
+            except socket.error: # Catches errors like invalid IP string format
+                self.logger.error(f"Failed to convert IP string '{advertised_ip_str}' to packed address. Zeroconf will attempt to determine addresses from hostname.")
+
         self.__service_info = zeroconf.ServiceInfo(
-            ZeroconfServer.service,
-            inner.device_name + "." + ZeroconfServer.service,
+            ZeroconfServer.service,  # type, e.g., "_spotify-connect._tcp.local."
+            f"{inner.device_name}.{ZeroconfServer.service}",  # name, e.g., "MyDevice._spotify-connect._tcp.local."
             listen_port,
-            0,
-            0, {
+            0,  # weight
+            0,  # priority
+            {   # properties
                 "CPath": "/",
                 "VERSION": "1.0",
                 "STACK": "SP",
             },
-            self.get_useful_hostname() + ".",
-            addresses=[
-                socket.inet_aton(
-                    socket.gethostbyname(self.get_useful_hostname()))
-            ])
+            server=f"{server_hostname}.local.", # server FQDN
+            addresses=service_addresses # Pass resolved IP, or None if 0.0.0.0 or conversion failed
+        )
+
         self.__zeroconf.register_service(self.__service_info)
-        threading.Thread(target=self.__zeroconf.start,
-                         name="zeroconf-multicast-dns-server").start()
+
+    def _get_local_ip(self) -> str:
+        """Tries to determine a non-loopback local IP address for network advertisement."""
+        s = None
+        ip_address = "0.0.0.0" # Default to all interfaces if specific IP cannot be found
+        try:
+            # Attempt to connect to an external address to find the appropriate local IP
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(0.1) # Short timeout for the connect attempt
+            s.connect(("8.8.8.8", 80)) # Google's public DNS server
+            ip_address = s.getsockname()[0]
+            self.logger.info(f"Determined local IP via connect trick: {ip_address}")
+        except OSError as e: # Catches socket errors like [Errno 101] Network is unreachable
+            self.logger.warning(f"Could not determine local IP via connect trick ({e}). Trying socket.gethostname().")
+            try:
+                hostname = socket.gethostname()
+                # gethostbyname can return 127.0.0.1 if hostname resolves to it
+                ip_address = socket.gethostbyname(hostname)
+                self.logger.info(f"IP from socket.gethostname('{hostname}'): {ip_address}")
+            except socket.gaierror:
+                self.logger.error(
+                    f"socket.gaierror resolving hostname '{socket.gethostname()}'. Falling back to 0.0.0.0."
+                )
+                ip_address = "0.0.0.0"
+        finally:
+            if s:
+                s.close()
+
+        # If the IP is loopback (127.x.x.x) or still 0.0.0.0, try to find a better one from all interfaces
+        if ip_address.startswith("127.") or ip_address == "0.0.0.0":
+            self.logger.warning(
+                f"Current IP ('{ip_address}') is loopback or 0.0.0.0. Attempting to find a non-loopback IP from host interfaces."
+            )
+            try:
+                current_hostname = socket.gethostname()
+                all_ips_info = socket.gethostbyname_ex(current_hostname)
+                # all_ips_info is a tuple: (hostname, aliaslist, ipaddrlist)
+                non_loopback_ips = [ip for ip in all_ips_info[2] if not ip.startswith("127.")]
+
+                if non_loopback_ips:
+                    ip_address = non_loopback_ips[0] # Pick the first non-loopback IP
+                    self.logger.info(f"Found non-loopback IP from host interfaces ('{current_hostname}'): {ip_address}")
+                else:
+                    self.logger.warning(
+                        f"No non-loopback IPs found for hostname '{current_hostname}'. Retaining '{ip_address}'."
+                    )
+                    # If ip_address was 0.0.0.0, it remains so. If it was 127.0.0.1, it remains so.
+            except socket.gaierror:
+                self.logger.error(
+                    f"socket.gaierror during fallback IP search for hostname '{socket.gethostname()}'. Retaining '{ip_address}'."
+                )
+
+        if ip_address == "0.0.0.0":
+            self.logger.warning("Failed to determine a specific non-loopback IP. Zeroconf will attempt to use all available interfaces.")
+        elif ip_address.startswith("127."):
+             self.logger.warning(f"Final IP for advertisement is loopback ('{ip_address}'). Service discovery may not work correctly on the network.")
+        else:
+            self.logger.info(f"Using IP address for Zeroconf advertisement: {ip_address}")
+
+        return ip_address
 
     def add_session_listener(self, listener: ZeroconfServer):
         self.__session_listeners.append(listener)
@@ -99,13 +181,6 @@ class ZeroconfServer(Closeable):
             session_listener.session_closing(self.__session)
         self.__session.close()
         self.__session = None
-
-    def get_useful_hostname(self) -> str:
-        host = socket.gethostname()
-        if host == "localhost":
-            pass
-        else:
-            return host
 
     def handle_add_user(self, __socket: socket.socket, params: dict[str, str],
                         http_version: str) -> None:
@@ -194,7 +269,8 @@ class ZeroconfServer(Closeable):
         info["remoteName"] = self.__inner.device_name
         info["publicKey"] = base64.b64encode(
             self.__keys.public_key_bytes()).decode()
-        info["deviceType"] = Connect.DeviceType.Name(self.__inner.device_type)
+        device_type_name = Connect.DeviceType.Name(self.__inner.device_type)
+        info["deviceType"] = device_type_name.title()
         with self.__connection_lock:
             info[
                 "activeUser"] = self.__connecting_username if self.__connecting_username is not None else self.__session.username(

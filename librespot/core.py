@@ -29,7 +29,7 @@ from Cryptodome.Protocol.KDF import PBKDF2
 from Cryptodome.PublicKey import RSA
 from Cryptodome.Signature import PKCS1_v1_5
 
-from librespot import util, oauth
+from librespot import util
 from librespot import Version
 from librespot.audio import AudioKeyManager
 from librespot.audio import CdnManager
@@ -48,7 +48,6 @@ from librespot.metadata import EpisodeId
 from librespot.metadata import PlaylistId
 from librespot.metadata import ShowId
 from librespot.metadata import TrackId
-from librespot.oauth import OAuth
 from librespot.proto import Authentication_pb2 as Authentication
 from librespot.proto import ClientToken_pb2 as ClientToken
 from librespot.proto import Connect_pb2 as Connect
@@ -57,6 +56,17 @@ from librespot.proto import Keyexchange_pb2 as Keyexchange
 from librespot.proto import Metadata_pb2 as Metadata
 from librespot.proto import Playlist4External_pb2 as Playlist4External
 from librespot.proto.ExplicitContentPubsub_pb2 import UserAttributesUpdate
+try:
+    from librespot.proto.spotify.login5.v3 import Login5_pb2 as Login5
+    from librespot.proto.spotify.login5.v3 import ClientInfo_pb2 as Login5ClientInfo
+    from librespot.proto.spotify.login5.v3.credentials import Credentials_pb2 as Login5Credentials
+    LOGIN5_AVAILABLE = True
+except ImportError as e:
+    # Login5 protobuf files not available, will use fallback
+    LOGIN5_AVAILABLE = False
+    Login5 = None
+    Login5ClientInfo = None
+    Login5Credentials = None
 from librespot.structure import Closeable
 from librespot.structure import MessageListener
 from librespot.structure import RequestListener
@@ -80,40 +90,28 @@ class ApiClient(Closeable):
         suffix: str,
         headers: typing.Union[None, typing.Dict[str, str]],
         body: typing.Union[None, bytes],
-        url: typing.Union[None, str],
     ) -> requests.PreparedRequest:
-        """
-
-        :param method: str:
-        :param suffix: str:
-        :param headers: typing.Union[None:
-        :param typing.Dict[str:
-        :param str]]:
-        :param body: typing.Union[None:
-        :param bytes]:
-        :param url: typing.Union[None:
-        :param str]:
-
-        """
         if self.__client_token_str is None:
             resp = self.__client_token()
             self.__client_token_str = resp.granted_token.token
-            self.logger.debug("Updated client token: {}".format(
-                self.__client_token_str))
+            self.logger.debug("Updated client token: {}".format(self.__client_token_str))
 
         request = requests.PreparedRequest()
         request.method = method
         request.data = body
-        request.headers = {}
-        if headers is not None:
-            request.headers = headers
+        request.headers = headers.copy() if headers else {}
         request.headers["Authorization"] = "Bearer {}".format(
-            self.__session.tokens().get("playlist-read"))
+            self.__session.tokens().get("playlist-read")
+        )
         request.headers["client-token"] = self.__client_token_str
-        if url is None:
-            request.url = self.__base_url + suffix
+
+        # Force metadata requests to use a specific host
+        if suffix.startswith("/metadata/4/"):
+            base_url = "https://spclient.wg.spotify.com"
         else:
-            request.url = url + suffix
+            base_url = self.__base_url
+
+        request.url = base_url + suffix
         return request
 
     def send(
@@ -123,53 +121,12 @@ class ApiClient(Closeable):
         headers: typing.Union[None, typing.Dict[str, str]],
         body: typing.Union[None, bytes],
     ) -> requests.Response:
-        """
-
-        :param method: str:
-        :param suffix: str:
-        :param headers: typing.Union[None:
-        :param typing.Dict[str:
-        :param str]]:
-        :param body: typing.Union[None:
-        :param bytes]:
-
-        """
         response = self.__session.client().send(
-            self.build_request(method, suffix, headers, body, None))
+            self.build_request(method, suffix, headers, body)
+        )
         return response
 
-    def sendToUrl(
-        self,
-        method: str,
-        url: str,
-        suffix: str,
-        headers: typing.Union[None, typing.Dict[str, str]],
-        body: typing.Union[None, bytes],
-    ) -> requests.Response:
-        """
-
-        :param method: str:
-        :param url: str:
-        :param suffix: str:
-        :param headers: typing.Union[None:
-        :param typing.Dict[str:
-        :param str]]:
-        :param body: typing.Union[None:
-        :param bytes]:
-
-        """
-        response = self.__session.client().send(
-            self.build_request(method, suffix, headers, body, url))
-        return response
-
-    def put_connect_state(self, connection_id: str,
-                          proto: Connect.PutStateRequest) -> None:
-        """
-
-        :param connection_id: str:
-        :param proto: Connect.PutStateRequest:
-
-        """
+    def put_connect_state(self, connection_id: str, proto: Connect.PutStateRequest) -> None:
         response = self.send(
             "PUT",
             "/connect-state/v1/devices/{}".format(self.__session.device_id()),
@@ -181,21 +138,17 @@ class ApiClient(Closeable):
         )
         if response.status_code == 413:
             self.logger.warning(
-                "PUT state payload is too large: {} bytes uncompressed.".
-                format(len(proto.SerializeToString())))
+                "PUT state payload is too large: {} bytes uncompressed.".format(
+                    len(proto.SerializeToString())
+                )
+            )
         elif response.status_code != 200:
-            self.logger.warning("PUT state returned {}. headers: {}".format(
-                response.status_code, response.headers))
+            self.logger.warning(
+                "PUT state returned {}. headers: {}".format(response.status_code, response.headers)
+            )
 
     def get_metadata_4_track(self, track: TrackId) -> Metadata.Track:
-        """
-
-        :param track: TrackId:
-
-        """
-        response = self.sendToUrl("GET", "https://spclient.wg.spotify.com",
-                             "/metadata/4/track/{}".format(track.hex_id()),
-                             None, None)
+        response = self.send("GET", "/metadata/4/track/{}".format(track.hex_id()), None, None)
         ApiClient.StatusCodeException.check_status(response)
         body = response.content
         if body is None:
@@ -205,14 +158,7 @@ class ApiClient(Closeable):
         return proto
 
     def get_metadata_4_episode(self, episode: EpisodeId) -> Metadata.Episode:
-        """
-
-        :param episode: EpisodeId:
-
-        """
-        response = self.sendToUrl("GET", "https://spclient.wg.spotify.com",
-                             "/metadata/4/episode/{}".format(episode.hex_id()),
-                             None, None)
+        response = self.send("GET", "/metadata/4/episode/{}".format(episode.hex_id()), None, None)
         ApiClient.StatusCodeException.check_status(response)
         body = response.content
         if body is None:
@@ -222,16 +168,8 @@ class ApiClient(Closeable):
         return proto
 
     def get_metadata_4_album(self, album: AlbumId) -> Metadata.Album:
-        """
-
-        :param album: AlbumId:
-
-        """
-        response = self.send("GET",
-                             "/metadata/4/album/{}".format(album.hex_id()),
-                             None, None)
+        response = self.send("GET", "/metadata/4/album/{}".format(album.hex_id()), None, None)
         ApiClient.StatusCodeException.check_status(response)
-
         body = response.content
         if body is None:
             raise IOError()
@@ -240,14 +178,7 @@ class ApiClient(Closeable):
         return proto
 
     def get_metadata_4_artist(self, artist: ArtistId) -> Metadata.Artist:
-        """
-
-        :param artist: ArtistId:
-
-        """
-        response = self.send("GET",
-                             "/metadata/4/artist/{}".format(artist.hex_id()),
-                             None, None)
+        response = self.send("GET", "/metadata/4/artist/{}".format(artist.hex_id()), None, None)
         ApiClient.StatusCodeException.check_status(response)
         body = response.content
         if body is None:
@@ -257,14 +188,7 @@ class ApiClient(Closeable):
         return proto
 
     def get_metadata_4_show(self, show: ShowId) -> Metadata.Show:
-        """
-
-        :param show: ShowId:
-
-        """
-        response = self.send("GET",
-                             "/metadata/4/show/{}".format(show.hex_id()), None,
-                             None)
+        response = self.send("GET", "/metadata/4/show/{}".format(show.hex_id()), None, None)
         ApiClient.StatusCodeException.check_status(response)
         body = response.content
         if body is None:
@@ -273,16 +197,8 @@ class ApiClient(Closeable):
         proto.ParseFromString(body)
         return proto
 
-    def get_playlist(self,
-                     _id: PlaylistId) -> Playlist4External.SelectedListContent:
-        """
-
-        :param _id: PlaylistId:
-
-        """
-        response = self.send("GET",
-                             "/playlist/v2/playlist/{}".format(_id.id()), None,
-                             None)
+    def get_playlist(self, _id: PlaylistId) -> Playlist4External.SelectedListContent:
+        response = self.send("GET", "/playlist/v2/playlist/{}".format(_id.id()), None, None)
         ApiClient.StatusCodeException.check_status(response)
         body = response.content
         if body is None:
@@ -292,17 +208,11 @@ class ApiClient(Closeable):
         return proto
 
     def set_client_token(self, client_token):
-        """
-
-        :param client_token:
-
-        """
         self.__client_token_str = client_token
 
     def __client_token(self):
         proto_req = ClientToken.ClientTokenRequest(
-            request_type=ClientToken.ClientTokenRequestType.
-            REQUEST_CLIENT_DATA_REQUEST,
+            request_type=ClientToken.ClientTokenRequestType.REQUEST_CLIENT_DATA_REQUEST,
             client_data=ClientToken.ClientDataRequest(
                 client_id=MercuryRequests.keymaster_client_id,
                 client_version=Version.version_name,
@@ -317,7 +227,8 @@ class ApiClient(Closeable):
                             something7=332,
                             something8=33404,
                             something10=True,
-                        ), ),
+                        ),
+                    ),
                 ),
             ),
         )
@@ -338,7 +249,6 @@ class ApiClient(Closeable):
         return proto_resp
 
     class StatusCodeException(IOError):
-        """ """
         code: int
 
         def __init__(self, response: requests.Response):
@@ -347,11 +257,6 @@ class ApiClient(Closeable):
 
         @staticmethod
         def check_status(response: requests.Response) -> None:
-            """
-
-            :param response: requests.Response:
-
-            """
             if response.status_code != 200:
                 raise ApiClient.StatusCodeException(response)
 
@@ -929,6 +834,8 @@ class Session(Closeable, MessageListener, SubListener):
     __stored_str: str = ""
     __token_provider: typing.Union[TokenProvider, None]
     __user_attributes = {}
+    __login5_access_token: typing.Union[str, None] = None
+    __login5_token_expiry: typing.Union[int, None] = None
 
     def __init__(self, inner: Inner, address: str) -> None:
         self.__client = Session.create_client(inner.conf)
@@ -968,6 +875,10 @@ class Session(Closeable, MessageListener, SubListener):
 
         """
         self.__authenticate_partial(credential, False)
+
+        # Try Login5 authentication for access token
+        self.__authenticate_login5(credential)
+
         with self.__auth_lock:
             self.__mercury_client = MercuryClient(self)
             self.__token_provider = TokenProvider(self)
@@ -1385,6 +1296,64 @@ class Session(Closeable, MessageListener, SubListener):
     def __send_unchecked(self, cmd: bytes, payload: bytes) -> None:
         self.cipher_pair.send_encoded(self.connection, cmd, payload)
 
+    def __authenticate_login5(self, credential: Authentication.LoginCredentials) -> None:
+        """Authenticate using Login5 to get access token"""
+        if not LOGIN5_AVAILABLE:
+            self.logger.warning("Login5 protobuf files not available, skipping Login5 authentication")
+            return
+
+        try:
+            # Build Login5 request
+            login5_request = Login5.LoginRequest()
+
+            # Set client info
+            login5_request.client_info.client_id = "65b708073fc0480ea92a077233ca87bd"
+            login5_request.client_info.device_id = self.__inner.device_id
+
+            # Set stored credential from APWelcome
+            if hasattr(self, '_Session__ap_welcome') and self.__ap_welcome:
+                stored_cred = Login5Credentials.StoredCredential()
+                stored_cred.username = self.__ap_welcome.canonical_username
+                stored_cred.data = self.__ap_welcome.reusable_auth_credentials
+                login5_request.stored_credential.CopyFrom(stored_cred)
+
+                # Send Login5 request
+                login5_url = "https://login5.spotify.com/v3/login"
+                headers = {
+                    "Content-Type": "application/x-protobuf",
+                    "Accept": "application/x-protobuf"
+                }
+
+                response = requests.post(
+                    login5_url,
+                    data=login5_request.SerializeToString(),
+                    headers=headers
+                )
+
+                if response.status_code == 200:
+                    login5_response = Login5.LoginResponse()
+                    login5_response.ParseFromString(response.content)
+
+                    if login5_response.HasField('ok'):
+                        self.__login5_access_token = login5_response.ok.access_token
+                        self.__login5_token_expiry = int(time.time()) + login5_response.ok.access_token_expires_in
+                        self.logger.info("Login5 authentication successful, got access token")
+                    else:
+                        self.logger.warning("Login5 authentication failed: {}".format(login5_response.error))
+                else:
+                    self.logger.warning("Login5 request failed with status: {}".format(response.status_code))
+        except Exception as e:
+            self.logger.warning("Failed to authenticate with Login5: {}".format(e))
+
+    def get_login5_token(self) -> typing.Union[str, None]:
+        """Get the Login5 access token if available and not expired"""
+        if self.__login5_access_token and self.__login5_token_expiry:
+            if int(time.time()) < self.__login5_token_expiry - 60:  # 60 second buffer
+                return self.__login5_access_token
+            else:
+                self.logger.debug("Login5 token expired, need to re-authenticate")
+        return None
+
     def __wait_auth_lock(self) -> None:
         if self.__closing and self.connection is None:
             self.logger.debug("Connection was broken while closing.")
@@ -1624,18 +1593,6 @@ class Session(Closeable, MessageListener, SubListener):
                         )
                     except KeyError:
                         pass
-            return self
-
-        def oauth(self, oauth_url_callback) -> Session.Builder:
-            """
-            Login via OAuth
-
-            You can supply an oauth_url_callback method that takes a string and returns the OAuth URL.
-            When oauth_url_callback is None, this will only log the auth url to the console.
-            """
-            if os.path.isfile(self.conf.stored_credentials_file):
-                return self.stored_file(None)
-            self.login_credentials = OAuth(MercuryRequests.keymaster_client_id, "http://127.0.0.1:5588/login", oauth_url_callback).flow()
             return self
 
         def user_pass(self, username: str, password: str) -> Session.Builder:
@@ -2289,6 +2246,16 @@ class TokenProvider:
         scopes = list(scopes)
         if len(scopes) == 0:
             raise RuntimeError("The token doesn't have any scope")
+
+        # Try to use Login5 token first
+        login5_token = self._session.get_login5_token()
+        if login5_token:
+            # Create a StoredToken-compatible object using Login5 token
+            login5_stored_token = TokenProvider.Login5StoredToken(login5_token, scopes)
+            self.logger.debug("Using Login5 access token for scopes: {}".format(scopes))
+            return login5_stored_token
+
+        # Fallback to existing token logic
         token = self.find_token_with_all_scopes(scopes)
         if token is not None:
             if token.expired():
@@ -2298,15 +2265,42 @@ class TokenProvider:
         self.logger.debug(
             "Token expired or not suitable, requesting again. scopes: {}, old_token: {}"
             .format(scopes, token))
-        response = self._session.mercury().send_sync_json(
-            MercuryRequests.request_token(self._session.device_id(),
-                                          ",".join(scopes)))
-        token = TokenProvider.StoredToken(response)
-        self.logger.debug(
-            "Updated token successfully! scopes: {}, new_token: {}".format(
-                scopes, token))
-        self.__tokens.append(token)
-        return token
+
+        # Try keymaster endpoint as fallback (deprecated)
+        try:
+            response = self._session.mercury().send_sync_json(
+                MercuryRequests.request_token(self._session.device_id(),
+                                              ",".join(scopes)))
+            token = TokenProvider.StoredToken(response)
+            self.logger.debug(
+                "Updated token successfully! scopes: {}, new_token: {}".format(
+                    scopes, token))
+            self.__tokens.append(token)
+            return token
+        except Exception as e:
+            self.logger.warning("Failed to get token from keymaster endpoint: {}".format(e))
+            raise RuntimeError("Unable to obtain access token")
+
+    class Login5StoredToken:
+        """StoredToken-compatible wrapper for Login5 access tokens"""
+        access_token: str
+        scopes: typing.List[str]
+
+        def __init__(self, access_token: str, scopes: typing.List[str]):
+            self.access_token = access_token
+            self.scopes = scopes
+
+        def expired(self) -> bool:
+            """Login5 tokens are managed by Session, so delegate expiry check"""
+            return False  # Session handles expiry
+
+        def has_scope(self, scope: str) -> bool:
+            """Login5 tokens are general-purpose, assume they have all scopes"""
+            return True
+
+        def has_scopes(self, sc: typing.List[str]) -> bool:
+            """Login5 tokens are general-purpose, assume they have all scopes"""
+            return True
 
     class StoredToken:
         """ """

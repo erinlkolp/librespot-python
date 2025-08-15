@@ -65,7 +65,7 @@ class CipherPair:
             if mac != expected_mac:
                 raise RuntimeError()
             return Packet(cmd, payload_bytes)
-        except (IndexError, OSError):
+        except IndexError:
             raise RuntimeError("Failed to receive packet")
 
 
