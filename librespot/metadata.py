@@ -126,7 +126,7 @@ class AlbumId(SpotifyId):
         return AlbumId(hex_str)
 
     def to_mercury_uri(self) -> str:
-        return "hm://metadata/4/album/{}".format(self.__hex_id)
+        return "hm://extended-metadata/v0/extended-metadata/album/{}".format(self.__hex_id)
 
     def hex_id(self) -> str:
         return self.__hex_id
@@ -162,7 +162,7 @@ class ArtistId(SpotifyId):
         return ArtistId(hex_str)
 
     def to_mercury_uri(self) -> str:
-        return "hm://metadata/4/artist/{}".format(self.__hex_id)
+        return "hm://extended-metadata/v0/extended-metadata/artist/{}".format(self.__hex_id)
 
     def to_spotify_uri(self) -> str:
         return "spotify:artist:{}".format(
@@ -198,7 +198,7 @@ class EpisodeId(SpotifyId, PlayableId):
         return EpisodeId(hex_str)
 
     def to_mercury_uri(self) -> str:
-        return "hm://metadata/4/episode/{}".format(self.__hex_id)
+        return "hm://extended-metadata/v0/extended-metadata/episode/{}".format(self.__hex_id)
 
     def to_spotify_uri(self) -> str:
         return "Spotify:episode:{}".format(
@@ -236,7 +236,7 @@ class ShowId(SpotifyId):
         return ShowId(hex_str)
 
     def to_mercury_uri(self) -> str:
-        return "hm://metadata/4/show/{}".format(self.__hex_id)
+        return "hm://extended-metadata/v0/extended-metadata/show/{}".format(self.__hex_id)
 
     def to_spotify_uri(self) -> str:
         return "spotify:show:{}".format(
@@ -271,7 +271,7 @@ class TrackId(PlayableId, SpotifyId):
         return TrackId(hex_str)
 
     def to_mercury_uri(self) -> str:
-        return "hm://metadata/4/track/{}".format(self.__hex_id)
+        return "hm://extended-metadata/v0/extended-metadata/track/{}".format(self.__hex_id)
 
     def to_spotify_uri(self) -> str:
         return "spotify:track:{}".format(TrackId.base62.encode(util.hex_to_bytes(self.__hex_id)).decode())
