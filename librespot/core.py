@@ -106,7 +106,7 @@ class ApiClient(Closeable):
         request.headers["client-token"] = self.__client_token_str
 
         # Force metadata requests to use a specific host
-        if suffix.startswith("/metadata/4/"):
+        if suffix.startswith("/extended-metadata/v0/extended-metadata/"):
             base_url = "https://spclient.wg.spotify.com"
         else:
             base_url = self.__base_url
@@ -148,7 +148,7 @@ class ApiClient(Closeable):
             )
 
     def get_metadata_4_track(self, track: TrackId) -> Metadata.Track:
-        response = self.send("GET", "/metadata/4/track/{}".format(track.hex_id()), None, None)
+        response = self.send("GET", "/extended-metadata/v0/extended-metadata/track/{}".format(track.hex_id()), None, None)
         ApiClient.StatusCodeException.check_status(response)
         body = response.content
         if body is None:
@@ -158,7 +158,7 @@ class ApiClient(Closeable):
         return proto
 
     def get_metadata_4_episode(self, episode: EpisodeId) -> Metadata.Episode:
-        response = self.send("GET", "/metadata/4/episode/{}".format(episode.hex_id()), None, None)
+        response = self.send("GET", "/extended-metadata/v0/extended-metadata/episode/{}".format(episode.hex_id()), None, None)
         ApiClient.StatusCodeException.check_status(response)
         body = response.content
         if body is None:
@@ -168,7 +168,7 @@ class ApiClient(Closeable):
         return proto
 
     def get_metadata_4_album(self, album: AlbumId) -> Metadata.Album:
-        response = self.send("GET", "/metadata/4/album/{}".format(album.hex_id()), None, None)
+        response = self.send("GET", "/extended-metadata/v0/extended-metadata/album/{}".format(album.hex_id()), None, None)
         ApiClient.StatusCodeException.check_status(response)
         body = response.content
         if body is None:
@@ -178,7 +178,7 @@ class ApiClient(Closeable):
         return proto
 
     def get_metadata_4_artist(self, artist: ArtistId) -> Metadata.Artist:
-        response = self.send("GET", "/metadata/4/artist/{}".format(artist.hex_id()), None, None)
+        response = self.send("GET", "/extended-metadata/v0/extended-metadata/artist/{}".format(artist.hex_id()), None, None)
         ApiClient.StatusCodeException.check_status(response)
         body = response.content
         if body is None:
@@ -188,7 +188,7 @@ class ApiClient(Closeable):
         return proto
 
     def get_metadata_4_show(self, show: ShowId) -> Metadata.Show:
-        response = self.send("GET", "/metadata/4/show/{}".format(show.hex_id()), None, None)
+        response = self.send("GET", "/extended-metadata/v0/extended-metadata/show/{}".format(show.hex_id()), None, None)
         ApiClient.StatusCodeException.check_status(response)
         body = response.content
         if body is None:
